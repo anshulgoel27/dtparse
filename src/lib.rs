@@ -74,7 +74,6 @@
 extern crate lazy_static;
 
 extern crate chrono;
-extern crate log;
 extern crate num_traits;
 extern crate rust_decimal;
 
@@ -89,7 +88,6 @@ use chrono::NaiveDate;
 use chrono::NaiveDateTime;
 use chrono::NaiveTime;
 use chrono::Timelike;
-use log::warn;
 use num_traits::cast::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal::Error as DecimalError;
