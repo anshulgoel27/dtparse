@@ -86,6 +86,136 @@ fn github_32() {
 }
 
 #[test]
+fn large_minute_component_does_not_silently_zero() {
+    assert_eq!(
+        parse("2024-01-01 12:999999999999999999999999"),
+        Err(ParseError::InvalidNumeric(
+            "999999999999999999999999".to_owned()
+        ))
+    );
+    assert_eq!(
+        parse("2024-01-01 12h 999999999999999999999999m"),
+        Err(ParseError::InvalidNumeric(
+            "999999999999999999999999".to_owned()
+        ))
+    );
+    assert_eq!(
+        parse("2024-01-01 12:999999999999999999999999:30"),
+        Err(ParseError::InvalidNumeric(
+            "999999999999999999999999".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn textual_month_separator_edges_do_not_panic() {
+    assert_eq!(parse("Jan-"), Err(ParseError::UnrecognizedFormat));
+    assert_eq!(
+        parse("Jan-01-"),
+        Ok((
+            NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            None
+        ))
+    );
+}
+
+#[test]
+fn trailing_timezone_sign_is_rejected() {
+    assert_eq!(
+        parse("2000-01-01 12:00:00+"),
+        Err(ParseError::TimezoneUnsupported)
+    );
+    assert_eq!(
+        parse("2000-01-01 12:00:00-"),
+        Err(ParseError::TimezoneUnsupported)
+    );
+}
+
+#[test]
+fn recombine_skipped_sorts_before_merging_adjacent_tokens() {
+    let parser = Parser::default();
+    let tokens = vec![
+        "a".to_owned(),
+        "b".to_owned(),
+        "c".to_owned(),
+        "d".to_owned(),
+        "e".to_owned(),
+        "f".to_owned(),
+    ];
+
+    assert_eq!(
+        parser.recombine_skipped(vec![3, 1, 2, 5], tokens),
+        vec!["bcd".to_owned(), "f".to_owned()]
+    );
+}
+
+#[test]
+fn i32_wraparound_does_not_silently_truncate() {
+    // Values that fit in i64 but overflow i32, e.g. 2^32 + 30 = 4294967326
+    // Previously these would silently truncate via `as i32` (4294967326 as i32 == 30)
+
+    // HH:MM path — minute wraps to 30
+    assert!(parse("2024-01-01 12:4294967326").is_err());
+
+    // HH:MM path — hour wraps to 12
+    assert!(parse("2024-01-01 4294967308:30").is_err());
+
+    // ampm path — hour wraps to 12
+    assert!(parse("2024-01-01 4294967308 pm").is_err());
+
+    // HH.MMh fractional hour path — 12.4294967326h is a valid decimal
+    // (0.4294967326 * 60 ≈ 25.77 minutes), not a wraparound case
+    // so this is intentionally not tested here
+
+    // h suffix path — overflow hour silently becomes None
+    assert!(parse("2024-01-01 2147483648h").is_err());
+    assert!(parse("2024-01-01 2147483648h 30m").is_err());
+
+    // Just over i32::MAX
+    assert!(parse("2024-01-01 2147483648:00").is_err());
+    assert!(parse("2024-01-01 00:2147483648").is_err());
+}
+
+#[test]
+fn leap_year_century_rules() {
+    // Divisible by 400 — leap year, Feb 29 valid
+    assert!(parse("2000-02-29").is_ok());
+    // Regular leap year
+    assert!(parse("2024-02-29").is_ok());
+    // Divisible by 100 but not 400 — not a leap year, explicit day rejects
+    assert_eq!(
+        parse("1900-02-29"),
+        Err(ParseError::ImpossibleTimestamp("Invalid day"))
+    );
+    // Regular non-leap year — explicit day rejects
+    assert_eq!(
+        parse("2023-02-29"),
+        Err(ParseError::ImpossibleTimestamp("Invalid day"))
+    );
+    // No explicit day — default day (e.g. 31) should clamp to month max
+    // Default is typically Jan 1, but using a custom default with day=31
+    // to verify clamp behavior
+    let default = NaiveDate::from_ymd_opt(2020, 1, 31)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let p = Parser::default();
+    // "2020-02" has no explicit day, inherits day=31 from default, clamps to 29 (leap year)
+    let (dt, _, _) = p
+        .parse("2020-02", None, None, false, false, Some(&default), false, &HashMap::new())
+        .unwrap();
+    assert_eq!(format!("{:?}", dt), "2020-02-29T00:00:00");
+    // "2023-02" inherits day=31, clamps to 28 (non-leap year)
+    let (dt, _, _) = p
+        .parse("2023-02", None, None, false, false, Some(&default), false, &HashMap::new())
+        .unwrap();
+    assert_eq!(format!("{:?}", dt), "2023-02-28T00:00:00");
+}
+
+#[test]
 fn github_34() {
     let parse_vec = STANDARD.decode("KTMuLjYpGDYvLjZTNiouNjYuHzZpLjY/NkwuNh42Ry42PzYnKTMuNk02NjY2NjA2NjY2NjY2NjYTNjY2Ni82NjY2NlAuNlAuNlNI").unwrap();
     let parse_str = str::from_utf8(&parse_vec).unwrap();
