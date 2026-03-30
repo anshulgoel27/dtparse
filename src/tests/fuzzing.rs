@@ -110,16 +110,14 @@ fn large_minute_component_does_not_silently_zero() {
 #[test]
 fn textual_month_separator_edges_do_not_panic() {
     assert_eq!(parse("Jan-"), Err(ParseError::UnrecognizedFormat));
-    assert_eq!(
-        parse("Jan-01-"),
-        Ok((
-            NaiveDate::from_ymd_opt(1970, 1, 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap(),
-            None
-        ))
-    );
+    assert_eq!(parse("Jan-01-"), Err(ParseError::UnrecognizedFormat));
+    assert_eq!(parse("Jan/01/"), Err(ParseError::UnrecognizedFormat));
+}
+
+#[test]
+fn numeric_trailing_separator_is_rejected() {
+    assert_eq!(parse("2000-01-"), Err(ParseError::UnrecognizedFormat));
+    assert_eq!(parse("2024/01/"), Err(ParseError::UnrecognizedFormat));
 }
 
 #[test]
@@ -205,12 +203,30 @@ fn leap_year_century_rules() {
     let p = Parser::default();
     // "2020-02" has no explicit day, inherits day=31 from default, clamps to 29 (leap year)
     let (dt, _, _) = p
-        .parse("2020-02", None, None, false, false, Some(&default), false, &HashMap::new())
+        .parse(
+            "2020-02",
+            None,
+            None,
+            false,
+            false,
+            Some(&default),
+            false,
+            &HashMap::new(),
+        )
         .unwrap();
     assert_eq!(format!("{:?}", dt), "2020-02-29T00:00:00");
     // "2023-02" inherits day=31, clamps to 28 (non-leap year)
     let (dt, _, _) = p
-        .parse("2023-02", None, None, false, false, Some(&default), false, &HashMap::new())
+        .parse(
+            "2023-02",
+            None,
+            None,
+            false,
+            false,
+            Some(&default),
+            false,
+            &HashMap::new(),
+        )
         .unwrap();
     assert_eq!(format!("{:?}", dt), "2023-02-28T00:00:00");
 }
