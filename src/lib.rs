@@ -74,6 +74,7 @@
 extern crate lazy_static;
 
 extern crate chrono;
+extern crate log;
 extern crate num_traits;
 extern crate rust_decimal;
 
@@ -88,6 +89,7 @@ use chrono::NaiveDate;
 use chrono::NaiveDateTime;
 use chrono::NaiveTime;
 use chrono::Timelike;
+use log::warn;
 use num_traits::cast::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal::Error as DecimalError;
@@ -364,10 +366,7 @@ impl ParserInfo {
 }
 
 fn days_in_month(year: i32, month: i32) -> Result<u32, ParseError> {
-    let leap_year = match year % 4 {
-        0 => year % 400 != 0,
-        _ => false,
-    };
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
 
     match month {
         2 => {
@@ -780,13 +779,18 @@ impl Parser {
                     if l[i + 1] == "-" || l[i + 1] == "/" {
                         // Jan-01[-99]
                         let sep = &l[i + 1];
-                        // TODO: This seems like a very unsafe unwrap
+                        if i + 2 >= len_l {
+                            return Err(ParseError::UnrecognizedFormat);
+                        }
                         ymd.append(l[i + 2].parse::<i32>()?, &l[i + 2], None)?;
 
-                        if i + 3 < len_l && &l[i + 3] == sep {
+                        if i + 4 < len_l && &l[i + 3] == sep {
                             // Jan-01-99
                             ymd.append(l[i + 4].parse::<i32>()?, &l[i + 4], None)?;
                             i += 2;
+                        } else if i + 3 < len_l && &l[i + 3] == sep {
+                            // Jan-01- (trailing separator, no value)
+                            return Err(ParseError::UnrecognizedFormat);
                         }
 
                         i += 2;
@@ -840,6 +844,9 @@ impl Parser {
                 }
             } else if res.hour.is_some() && (l[i] == "+" || l[i] == "-") {
                 let signal = if l[i] == "+" { 1 } else { -1 };
+                if i + 1 >= len_l {
+                    return Err(ParseError::TimezoneUnsupported);
+                }
                 // check next index's length
                 let timezone_len = l[i + 1].len();
 
@@ -991,15 +998,13 @@ impl Parser {
         };
 
         // TODO: Change month/day to u32
-        let d = NaiveDate::from_ymd_opt(
-            y,
-            m,
-            min(
-                res.day.unwrap_or(default.day() as i32) as u32,
-                days_in_month(y, m as i32)?,
-            ),
-        )
-        .ok_or(ParseError::ImpossibleTimestamp("Invalid date range given"))?;
+        let day = res.day.unwrap_or(default.day() as i32) as u32;
+        let max_day = days_in_month(y, m as i32)?;
+        if res.day.is_some() && day > max_day {
+            return Err(ParseError::ImpossibleTimestamp("Invalid day"));
+        }
+        let d = NaiveDate::from_ymd_opt(y, m, min(day, max_day))
+            .ok_or(ParseError::ImpossibleTimestamp("Invalid date range given"))?;
 
         let d = d + d_offset;
 
@@ -1009,20 +1014,19 @@ impl Parser {
         let nanosecond =
             res.nanosecond
                 .unwrap_or(default.and_utc().timestamp_subsec_nanos() as i64) as u32;
-        let t =
-            NaiveTime::from_hms_nano_opt(hour, minute, second, nanosecond).ok_or_else(|| {
-                if hour >= 24 {
-                    ParseError::ImpossibleTimestamp("Invalid hour")
-                } else if minute >= 60 {
-                    ParseError::ImpossibleTimestamp("Invalid minute")
-                } else if second >= 60 {
-                    ParseError::ImpossibleTimestamp("Invalid second")
-                } else if nanosecond >= 2_000_000_000 {
-                    ParseError::ImpossibleTimestamp("Invalid microsecond")
-                } else {
-                    unreachable!();
-                }
-            })?;
+        let t = NaiveTime::from_hms_nano_opt(hour, minute, second, nanosecond).ok_or({
+            if hour >= 24 {
+                ParseError::ImpossibleTimestamp("Invalid hour")
+            } else if minute >= 60 {
+                ParseError::ImpossibleTimestamp("Invalid minute")
+            } else if second >= 60 {
+                ParseError::ImpossibleTimestamp("Invalid second")
+            } else if nanosecond >= 1_000_000_000 {
+                ParseError::ImpossibleTimestamp("Invalid nanosecond")
+            } else {
+                ParseError::ImpossibleTimestamp("Invalid time")
+            }
+        })?;
 
         Ok(NaiveDateTime::new(d, t))
     }
@@ -1127,16 +1131,21 @@ impl Parser {
         } else if idx + 2 < len_l && tokens[idx + 1] == ":" {
             // HH:MM[:SS[.ss]]
             // TODO: Better story around Decimal handling
-            res.hour = Some(value.floor().to_i64().unwrap() as i32);
+            res.hour = Some(
+                value
+                    .floor()
+                    .to_i32()
+                    .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?,
+            );
             // TODO: Rescope `value` here?
             value = self.to_decimal(&tokens[idx + 2])?;
-            let min_sec = self.parse_min_sec(value);
+            let min_sec = self.parse_min_sec(value, &tokens[idx + 2])?;
             res.minute = Some(min_sec.0);
             res.second = min_sec.1;
 
             if idx + 4 < len_l && tokens[idx + 3] == ":" {
                 // TODO: (x, y) = (a, b) syntax?
-                let ms = self.parsems(&tokens[idx + 4]).unwrap();
+                let ms = self.parsems(&tokens[idx + 4])?;
                 res.second = Some(ms.0);
                 res.nanosecond = Some(ms.1);
 
@@ -1157,7 +1166,7 @@ impl Parser {
                     ymd.append(val as i32, &tokens[idx + 2], Some(YMDLabel::Month))?;
                 }
 
-                if idx + 3 < len_l && &tokens[idx + 3] == sep {
+                if idx + 4 < len_l && &tokens[idx + 3] == sep {
                     if let Some(value) = info.month_index(&tokens[idx + 4]) {
                         ymd.append(value as i32, &tokens[idx + 4], Some(YMDLabel::Month))?;
                     } else if let Ok(val) = tokens[idx + 4].parse::<i32>() {
@@ -1167,6 +1176,9 @@ impl Parser {
                     }
 
                     idx += 2;
+                } else if idx + 3 < len_l && &tokens[idx + 3] == sep {
+                    // Trailing separator with no value (e.g. "2000-01-")
+                    return Err(ParseError::UnrecognizedFormat);
                 }
 
                 idx += 1;
@@ -1175,7 +1187,9 @@ impl Parser {
             idx += 1
         } else if idx + 1 >= len_l || info.jump_index(&tokens[idx + 1]) {
             if idx + 2 < len_l && info.ampm_index(&tokens[idx + 2]).is_some() {
-                let hour = value.to_i64().unwrap() as i32;
+                let hour = value
+                    .to_i32()
+                    .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?;
                 let ampm = info.ampm_index(&tokens[idx + 2]).unwrap();
                 res.hour = Some(self.adjust_ampm(hour, ampm));
                 idx += 1;
@@ -1193,11 +1207,17 @@ impl Parser {
             && (*ZERO <= value && value < *TWENTY_FOUR)
         {
             // 12am
-            let hour = value.to_i64().unwrap() as i32;
+            let hour = value
+                .to_i32()
+                .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?;
             res.hour = Some(self.adjust_ampm(hour, info.ampm_index(&tokens[idx + 1]).unwrap()));
             idx += 1;
-        } else if ymd.could_be_day(value.to_i64().unwrap() as i32) {
-            ymd.append(value.to_i64().unwrap() as i32, value_repr, None)?;
+        } else if let Some(v) = value.to_i32() {
+            if ymd.could_be_day(v) {
+                ymd.append(v, value_repr, None)?;
+            } else if !fuzzy {
+                return Err(ParseError::UnrecognizedFormat);
+            }
         } else if !fuzzy {
             return Err(ParseError::UnrecognizedFormat);
         }
@@ -1248,7 +1268,7 @@ impl Parser {
         } else if idx > 1 {
             idx - 2
         } else if len_l == 0 {
-            panic!("Attempting to find_hms_index() wih no tokens.");
+            return None;
         } else {
             0
         };
@@ -1302,16 +1322,24 @@ impl Parser {
         let value = self.to_decimal(value_repr)?;
 
         if hms == 0 {
-            res.hour = value.to_i32();
+            res.hour = Some(
+                value
+                    .to_i32()
+                    .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?,
+            );
             if !close_to_integer(&value) {
-                res.minute = Some((*SIXTY * (value % *ONE)).to_i64().unwrap() as i32);
+                res.minute = Some(
+                    (*SIXTY * (value % *ONE))
+                        .to_i32()
+                        .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?,
+                );
             }
         } else if hms == 1 {
-            let (min, sec) = self.parse_min_sec(value);
+            let (min, sec) = self.parse_min_sec(value, value_repr)?;
             res.minute = Some(min);
             res.second = sec;
         } else if hms == 2 {
-            let (sec, micro) = self.parsems(value_repr).unwrap();
+            let (sec, micro) = self.parsems(value_repr)?;
             res.second = Some(sec);
             res.nanosecond = Some(micro);
         }
@@ -1323,17 +1351,24 @@ impl Parser {
         Decimal::from_str(value).map_err(|_| ParseError::InvalidNumeric(value.to_owned()))
     }
 
-    fn parse_min_sec(&self, value: Decimal) -> (i32, Option<i32>) {
-        // UNWRAP: i64 guaranteed to be fine because of preceding floor
-        let minute = value.floor().to_i64().unwrap() as i32;
+    fn parse_min_sec(&self, value: Decimal, value_repr: &str) -> ParseResult<(i32, Option<i32>)> {
+        let minute = value
+            .floor()
+            .to_i32()
+            .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?;
         let mut second = None;
 
         let sec_remainder = value - value.floor();
         if sec_remainder != *ZERO {
-            second = Some((*SIXTY * sec_remainder).floor().to_i64().unwrap() as i32);
+            second = Some(
+                (*SIXTY * sec_remainder)
+                    .floor()
+                    .to_i32()
+                    .ok_or_else(|| ParseError::InvalidNumeric(value_repr.to_owned()))?,
+            );
         }
 
-        (minute, second)
+        Ok((minute, second))
     }
 
     fn recombine_skipped(&self, skipped_idxs: Vec<usize>, tokens: Vec<String>) -> Vec<String> {
@@ -1343,7 +1378,7 @@ impl Parser {
         sorted_idxs.sort();
 
         for (i, idx) in sorted_idxs.iter().enumerate() {
-            if i > 0 && idx - 1 == skipped_idxs[i - 1] {
+            if i > 0 && idx - 1 == sorted_idxs[i - 1] {
                 // UNWRAP: Having an initial value and unconditional push at end guarantees value
                 let mut t = skipped_tokens.pop().unwrap();
                 t.push_str(tokens[*idx].as_ref());
