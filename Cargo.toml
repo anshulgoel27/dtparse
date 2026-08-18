@@ -17,10 +17,10 @@ maintenance = { status = "passively-maintained" }
 name = "dtparse"
 
 [dependencies]
-chrono = { version = "0.4.24", default-features = false, features = ["clock"] }
-lazy_static = "1.4.0"
-num-traits = "0.2.15"
-rust_decimal = { version = "1.29.1", default-features = false }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+lazy_static = "1.5.0"
+num-traits = "0.2.19"
+rust_decimal = { version = "1.42.1", default-features = false }
 
 [dev-dependencies]
-base64 = "0.21.0"
+base64 = "0.23.1"

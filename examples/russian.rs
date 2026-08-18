@@ -12,21 +12,23 @@ fn main() {
     // with a version in Russian. Lovingly taken from:
     // https://github.com/dateutil/dateutil/blob/99f5770e7c63aa049b28abe465d7f1cc25b63fd2/dateutil/test/test_parser.py#L244
 
-    let mut info = ParserInfo::default();
-    info.months = parse_info(vec![
-        vec!["янв", "Январь"],
-        vec!["фев", "Февраль"],
-        vec!["мар", "Март"],
-        vec!["апр", "Апрель"],
-        vec!["май", "Май"],
-        vec!["июн", "Июнь"],
-        vec!["июл", "Июль"],
-        vec!["авг", "Август"],
-        vec!["сен", "Сентябрь"],
-        vec!["окт", "Октябрь"],
-        vec!["ноя", "Ноябрь"],
-        vec!["дек", "Декабрь"],
-    ]);
+    let info = ParserInfo {
+        months: parse_info(vec![
+            vec!["янв", "Январь"],
+            vec!["фев", "Февраль"],
+            vec!["мар", "Март"],
+            vec!["апр", "Апрель"],
+            vec!["май", "Май"],
+            vec!["июн", "Июнь"],
+            vec!["июл", "Июль"],
+            vec!["авг", "Август"],
+            vec!["сен", "Сентябрь"],
+            vec!["окт", "Октябрь"],
+            vec!["ноя", "Ноябрь"],
+            vec!["дек", "Декабрь"],
+        ]),
+        ..Default::default()
+    };
 
     let p = Parser::new(info);
 
